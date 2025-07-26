@@ -1,0 +1,21 @@
+.anchor
+.DS_Store
+target
+**/*.rs.bk
+node_modules
+test-ledger
+.yarn
+
+
+hatim@Hatims-MacBook-Air dex % anchor deploy --provider.cluster devnet
+
+Deploying cluster: https://api.devnet.solana.com
+Upgrade authority: /Users/hatim/.config/solana/id.json
+Deploying program "dex"...
+Program path: /Users/hatim/Projects/Solana/Solana-dex/dex/target/deploy/dex.so...
+Program Id: 5AMYdYDQun6XDxcVfAcr8cvrvxEXBpAaYE9kE7U2hsHT
+
+Signature: 2LYDaK8UMsDZaDpFW9nbzicTuJbscp5zGa5mo88QHtHoH3JuLwS9TgoH7khGAXQki7Qj4muLwHBazTFLxw25iazn
+
+Deploy success
+hatim@Hatims-MacBook-Air dex 
