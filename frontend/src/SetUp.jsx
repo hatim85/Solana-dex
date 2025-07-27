@@ -27,14 +27,24 @@ import {
 } from '@metaplex-foundation/mpl-token-metadata';
 import { percentAmount, publicKey as umiPublicKey, signerIdentity } from '@metaplex-foundation/umi';
 import { base58 } from '@metaplex-foundation/umi/serializers';
+import { PinataSDK } from 'pinata';
+
+const pinata = new PinataSDK({
+  pinataJwt: import.meta.env.VITE_PINATA_JWT,
+  pinataGateway: import.meta.env.VITE_GATEWAY_URL,
+});
 
 export const Setup = () => {
   const { publicKey, wallet } = useWallet();
   const { connection } = useConnection();
-  const [tokenADecimals, setTokenADecimals] = useState('9');
-  const [tokenBDecimals, setTokenBDecimals] = useState('9');
   const [tokenAAmount, setTokenAAmount] = useState('');
   const [tokenBAmount, setTokenBAmount] = useState('');
+  const [tokenAName, setTokenAName] = useState('');
+  const [tokenBName, setTokenBName] = useState('');
+  const [tokenASymbol, setTokenASymbol] = useState('');
+  const [tokenBSymbol, setTokenBSymbol] = useState('');
+  const [tokenAFile, setTokenAFile] = useState(null);
+  const [tokenBFile, setTokenBFile] = useState(null);
   const [status, setStatus] = useState('');
   const [tokenAMint, setTokenAMint] = useState('');
   const [tokenBMint, setTokenBMint] = useState('');
@@ -51,6 +61,50 @@ export const Setup = () => {
     }
   };
 
+  const uploadToPinata = async (file) => {
+    if (!file) throw new Error('No file provided for upload');
+    const pinataJwt = import.meta.env.VITE_PINATA_JWT;
+    const gatewayUrl = import.meta.env.VITE_GATEWAY_URL;
+    console.log('Pinata configuration:', { pinataJwt: !!pinataJwt, gatewayUrl });
+    if (!pinataJwt || !gatewayUrl) {
+      throw new Error('Pinata JWT or Gateway URL not configured in environment variables');
+    }
+    try {
+      const upload = await pinata.upload.public.file(file);
+      console.log('Pinata upload response:', { cid: upload.cid });
+      if (!upload.cid) {
+        throw new Error('Upload failed: No CID returned');
+      }
+      const ipfsLink = await pinata.gateways.public.convert(upload.cid);
+      console.log('Converted IPFS link:', ipfsLink);
+      return ipfsLink;
+    } catch (error) {
+      console.error('Pinata upload failed:', error);
+      throw new Error(`Failed to upload to Pinata: ${error.message || 'Unknown error'}`);
+    }
+  };
+
+  const estimateTransactionSize = (transaction) => {
+    try {
+      const message = transaction.serializeMessage();
+      return message.length;
+    } catch (error) {
+      console.error('Error estimating transaction size:', error);
+      return 0;
+    }
+  };
+
+  const sendTransactionWithConfirmation = async (transaction, signers, blockhash, lastValidBlockHeight) => {
+    transaction.feePayer = publicKey;
+    transaction.recentBlockhash = blockhash;
+    transaction.lastValidBlockHeight = lastValidBlockHeight;
+    const signature = await wallet.adapter.sendTransaction(transaction, connection, { signers });
+    console.log('Transaction sent', { signature });
+    await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, 'confirmed');
+    console.log('Transaction confirmed', { signature });
+    return signature;
+  };
+
   const handleSetup = async () => {
     console.log('handleSetup started', { publicKey: publicKey?.toBase58(), wallet: !!wallet, adapter: !!wallet?.adapter });
 
@@ -61,32 +115,52 @@ export const Setup = () => {
     }
 
     try {
-      setStatus('Creating token mints, accounts, and metadata...');
+      setStatus('Uploading images to IPFS and creating tokens...');
       console.log('Starting token creation process...');
 
-      // Validate inputs
-      const decimalsA = parseInt(tokenADecimals);
-      const decimalsB = parseInt(tokenBDecimals);
+      // Hardcode decimals to 9
+      const decimalsA = 9;
+      const decimalsB = 9;
       const amountA = parseFloat(tokenAAmount);
       const amountB = parseFloat(tokenBAmount);
-      console.log('Input values', { decimalsA, decimalsB, amountA, amountB });
+      console.log('Input values', { decimalsA, decimalsB, amountA, amountB, tokenAName, tokenBName, tokenASymbol, tokenBSymbol });
 
-      if (isNaN(decimalsA) || isNaN(decimalsB) || decimalsA < 0 || decimalsB < 0 || decimalsA > 9 || decimalsB > 9) {
-        setStatus('Invalid decimals provided. Decimals must be between 0 and 9.');
-        console.log('Invalid decimals', { decimalsA, decimalsB });
-        return;
-      }
+      // Validate inputs
       if (isNaN(amountA) || isNaN(amountB) || amountA <= 0 || amountB <= 0) {
         setStatus('Invalid token amounts provided. Amounts must be positive numbers.');
         console.log('Invalid amounts', { amountA, amountB });
         return;
       }
+      if (!tokenAName || !tokenBName || !tokenASymbol || !tokenBSymbol) {
+        setStatus('All token name and symbol fields must be filled.');
+        console.log('Missing metadata inputs', { tokenAName, tokenBName, tokenASymbol, tokenBSymbol });
+        return;
+      }
+      if (!tokenAFile || !tokenBFile) {
+        setStatus('Please upload images for both tokens.');
+        console.log('Missing image files', { tokenAFile, tokenBFile });
+        return;
+      }
+      const validImageTypes = ['image/jpeg', 'image/png', 'image/gif'];
+      if (!validImageTypes.includes(tokenAFile.type) || !validImageTypes.includes(tokenBFile.type)) {
+        setStatus('Invalid image file type. Only JPEG, PNG, and GIF are supported.');
+        console.log('Invalid image types', { tokenAFileType: tokenAFile.type, tokenBFileType: tokenBFile.type });
+        return;
+      }
+
+      // Upload images to Pinata
+      setStatus('Uploading Token A image to IPFS...');
+      const tokenAUri = await uploadToPinata(tokenAFile);
+      console.log('Token A image uploaded', { tokenAUri });
+      setStatus('Uploading Token B image to IPFS...');
+      const tokenBUri = await uploadToPinata(tokenBFile);
+      console.log('Token B image uploaded', { tokenBUri });
 
       // Check SOL balance
       console.log('Checking wallet SOL balance...');
       const balance = await connection.getBalance(publicKey);
       console.log('Wallet SOL balance', { balance: balance / LAMPORTS_PER_SOL });
-      const minSolRequired = 0.005 * LAMPORTS_PER_SOL * 3; // ~0.015 SOL for 3 transactions
+      const minSolRequired = 0.015 * LAMPORTS_PER_SOL;
       if (balance < minSolRequired) {
         setStatus(`Insufficient SOL balance. Need at least ${minSolRequired / LAMPORTS_PER_SOL} SOL.`);
         console.log('Insufficient SOL balance', { balance: balance / LAMPORTS_PER_SOL });
@@ -118,7 +192,6 @@ export const Setup = () => {
               }
               keys = ix.accountIndexes.map((index, i) => {
                 let pubkey = tx.message.accounts[index];
-                // Fix for SysvarInstructions
                 if (pubkey === 'Sysvar1nstructions1111111111111111111111111') {
                   console.warn('Correcting SysvarInstructions public key');
                   pubkey = SYSVAR_INSTRUCTIONS_PUBKEY.toBase58();
@@ -128,8 +201,8 @@ export const Setup = () => {
                 }
                 return {
                   pubkey,
-                  isSigner: i === 3 || i === 4 || i === 5, // Payer, mintAuthority, updateAuthority
-                  isWritable: i === 0 || i === 2, // Metadata, mint
+                  isSigner: i === 3 || i === 4 || i === 5 || i === 8 || i === 9 || i === 10,
+                  isWritable: i === 0 || i === 2 || i === 6 || i === 7,
                 };
               });
             }
@@ -184,12 +257,14 @@ export const Setup = () => {
       // Get rent exemption
       const rentExemptLamports = await getMinimumBalanceForRentExemptMint(connection);
 
-      // Transaction 1: Mints and ATAs
-      const transaction1 = new Transaction();
+      // Prepare transactions
       let { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+      const transactionA = new Transaction();
+      const transactionB = new Transaction();
+      let useSingleTransaction = true;
 
       // Token A Mint
-      transaction1.add(
+      transactionA.add(
         SystemProgram.createAccount({
           fromPubkey: publicKey,
           newAccountPubkey: tokenAMintKeypair.publicKey,
@@ -200,24 +275,6 @@ export const Setup = () => {
         createInitializeMintInstruction(
           tokenAMintKeypair.publicKey,
           decimalsA,
-          publicKey,
-          null,
-          TOKEN_PROGRAM_ID
-        )
-      );
-
-      // Token B Mint
-      transaction1.add(
-        SystemProgram.createAccount({
-          fromPubkey: publicKey,
-          newAccountPubkey: tokenBMintKeypair.publicKey,
-          space: MINT_SIZE,
-          lamports: rentExemptLamports,
-          programId: TOKEN_PROGRAM_ID,
-        }),
-        createInitializeMintInstruction(
-          tokenBMintKeypair.publicKey,
-          decimalsB,
           publicKey,
           null,
           TOKEN_PROGRAM_ID
@@ -235,7 +292,7 @@ export const Setup = () => {
       const tokenAAccountInfo = await connection.getAccountInfo(tokenAATA);
       if (!tokenAAccountInfo) {
         console.log('Token A ATA does not exist, creating it...');
-        transaction1.add(
+        transactionA.add(
           createAssociatedTokenAccountInstruction(
             publicKey,
             tokenAATA,
@@ -248,49 +305,7 @@ export const Setup = () => {
         console.log('Token A ATA already exists:', tokenAATA.toBase58());
       }
 
-      // Token B ATA
-      const tokenBATA = await getAssociatedTokenAddress(
-        tokenBMintKeypair.publicKey,
-        publicKey,
-        false,
-        TOKEN_PROGRAM_ID
-      );
-      console.log('Derived Token B ATA address:', tokenBATA.toBase58());
-      const tokenBAccountInfo = await connection.getAccountInfo(tokenBATA);
-      if (!tokenBAccountInfo) {
-        console.log('Token B ATA does not exist, creating it...');
-        transaction1.add(
-          createAssociatedTokenAccountInstruction(
-            publicKey,
-            tokenBATA,
-            publicKey,
-            tokenBMintKeypair.publicKey,
-            TOKEN_PROGRAM_ID
-          )
-        );
-      } else {
-        console.log('Token B ATA already exists:', tokenBATA.toBase58());
-      }
-
-      // Send Transaction 1
-      transaction1.feePayer = publicKey;
-      transaction1.recentBlockhash = blockhash;
-      transaction1.lastValidBlockHeight = lastValidBlockHeight;
-      console.log('Sending transaction 1 (mints, ATAs)...', { blockhash });
-      try {
-        const signature1 = await wallet.adapter.sendTransaction(transaction1, connection, {
-          signers: [tokenAMintKeypair, tokenBMintKeypair],
-        });
-        console.log('Transaction 1 sent', { signature1 });
-        await connection.confirmTransaction({ signature: signature1, blockhash, lastValidBlockHeight }, 'confirmed');
-        console.log('Transaction 1 confirmed');
-      } catch (txError) {
-        console.error('Transaction 1 failed:', txError);
-        throw new Error(`Failed to create mints and ATAs: ${txError.message || 'Transaction failed'}`);
-      }
-
-      // Transaction 2: Token A Metadata
-      ({ blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed'));
+      // Token A Metadata
       let tokenAMetadataPDA;
       try {
         const tokenAMintUmi = umiPublicKey(tokenAMintKeypair.publicKey.toBase58());
@@ -321,9 +336,9 @@ export const Setup = () => {
         authority: umi.identity,
         payer: umi.identity,
         updateAuthority: umi.identity,
-        name: 'Token A',
-        symbol: 'TKNA',
-        uri: 'https://example.com/token-a.json',
+        name: tokenAName,
+        symbol: tokenASymbol,
+        uri: tokenAUri,
         sellerFeeBasisPoints: percentAmount(0),
         tokenStandard: TokenStandard.Fungible,
       });
@@ -339,7 +354,6 @@ export const Setup = () => {
             if (value instanceof Uint8Array) return Array.from(value);
             return value;
           }, 2));
-          // Validate instructions
           const instructions = tokenAMetadataTx.message?.instructions || tokenAMetadataTx.instructions;
           console.log('Validating Token A metadata transaction instructions:', {
             hasInstructions: !!instructions,
@@ -350,21 +364,19 @@ export const Setup = () => {
           });
           if (!instructions || !Array.isArray(instructions) || instructions.length === 0) {
             console.error('Invalid Token A metadata transaction: no instructions', { tokenAMetadataTx });
-            // Rebuild builder to reset state
             tokenAMetadataBuilder = createV1(umi, {
               mint: umiPublicKey(tokenAMintKeypair.publicKey.toBase58()),
               authority: umi.identity,
               payer: umi.identity,
               updateAuthority: umi.identity,
-              name: 'Token A',
-              symbol: 'TKNA',
-              uri: 'https://example.com/token-a.json',
+              name: tokenAName,
+              symbol: tokenASymbol,
+              uri: tokenAUri,
               sellerFeeBasisPoints: percentAmount(0),
               tokenStandard: TokenStandard.Fungible,
             });
             throw new Error('No instructions found in transaction');
           }
-          // Validate instruction keys
           for (const ix of instructions) {
             console.log('Inspecting instruction:', { ix });
             let keys = ix.keys;
@@ -374,10 +386,8 @@ export const Setup = () => {
                 console.error('Invalid instruction: no keys or accountIndexes provided', { ix });
                 throw new Error('Invalid instruction: no keys or accountIndexes provided');
               }
-              // Construct keys from accountIndexes
               keys = ix.accountIndexes.map((index, i) => {
                 let pubkey = tokenAMetadataTx.message.accounts[index];
-                // Fix for SysvarInstructions
                 if (pubkey === 'Sysvar1nstructions1111111111111111111111111') {
                   console.warn('Correcting SysvarInstructions public key');
                   pubkey = SYSVAR_INSTRUCTIONS_PUBKEY.toBase58();
@@ -387,24 +397,24 @@ export const Setup = () => {
                 }
                 return {
                   pubkey,
-                  isSigner: i === 3 || i === 4 || i === 5, // Payer, mintAuthority, updateAuthority
-                  isWritable: i === 0 || i === 2, // Metadata, mint
+                  isSigner: i === 3 || i === 4 || i === 5,
+                  isWritable: i === 0 || i === 2,
                 };
               });
-              ix.keys = keys; // Assign constructed keys
+              ix.keys = keys;
             }
           }
-          break; // Success, exit loop
+          break;
         } catch (buildError) {
           console.error('Failed to build Token A metadata transaction (attempt ' + buildAttempts + '):', buildError);
           if (buildAttempts === maxBuildAttempts) {
             throw new Error(`Failed to build Token A metadata transaction after ${maxBuildAttempts} attempts: ${buildError.message}`);
           }
-          // Refresh blockhash for next attempt
-          ({ blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed'));
+          const latestBlock = await connection.getLatestBlockhash('confirmed');
+          blockhash = latestBlock.blockhash;
+          lastValidBlockHeight = latestBlock.lastValidBlockHeight;
         }
       }
-      const transaction2 = new Transaction();
       const instructionsA = tokenAMetadataTx.message?.instructions || tokenAMetadataTx.instructions;
       for (const ix of instructionsA) {
         if (!ix.keys || !Array.isArray(ix.keys)) {
@@ -412,12 +422,12 @@ export const Setup = () => {
           throw new Error('Invalid instruction: no keys provided');
         }
         const programPubkey = tokenAMetadataTx.message.accounts[ix.programIndex];
-        if (!validatePublicKey(programPubkey, 'Transaction 2 program key')) {
+        if (!validatePublicKey(programPubkey, 'Token A metadata program key')) {
           throw new Error(`Invalid program public key at index ${ix.programIndex}: ${programPubkey}`);
         }
-        transaction2.add({
+        transactionA.add({
           keys: ix.keys.map((key) => {
-            if (!validatePublicKey(key.pubkey, 'Transaction 2 keys mapping')) {
+            if (!validatePublicKey(key.pubkey, 'Token A metadata keys mapping')) {
               throw new Error(`Invalid public key in transaction: ${key.pubkey}`);
             }
             return {
@@ -430,21 +440,50 @@ export const Setup = () => {
           data: Buffer.from(ix.data),
         });
       }
-      transaction2.feePayer = publicKey;
-      transaction2.recentBlockhash = blockhash;
-      transaction2.lastValidBlockHeight = lastValidBlockHeight;
-      try {
-        const signature2 = await wallet.adapter.sendTransaction(transaction2, connection);
-        console.log('Token A metadata transaction sent', { signature2 });
-        await connection.confirmTransaction({ signature: signature2, blockhash, lastValidBlockHeight }, 'confirmed');
-        console.log('Token A metadata transaction confirmed');
-      } catch (txError) {
-        console.error('Token A metadata transaction failed:', txError);
-        throw new Error(`Failed to create Token A metadata: ${txError.message || 'Transaction failed'}`);
+
+      // Token B Mint
+      transactionB.add(
+        SystemProgram.createAccount({
+          fromPubkey: publicKey,
+          newAccountPubkey: tokenBMintKeypair.publicKey,
+          space: MINT_SIZE,
+          lamports: rentExemptLamports,
+          programId: TOKEN_PROGRAM_ID,
+        }),
+        createInitializeMintInstruction(
+          tokenBMintKeypair.publicKey,
+          decimalsB,
+          publicKey,
+          null,
+          TOKEN_PROGRAM_ID
+        )
+      );
+
+      // Token B ATA
+      const tokenBATA = await getAssociatedTokenAddress(
+        tokenBMintKeypair.publicKey,
+        publicKey,
+        false,
+        TOKEN_PROGRAM_ID
+      );
+      console.log('Derived Token B ATA address:', tokenBATA.toBase58());
+      const tokenBAccountInfo = await connection.getAccountInfo(tokenBATA);
+      if (!tokenBAccountInfo) {
+        console.log('Token B ATA does not exist, creating it...');
+        transactionB.add(
+          createAssociatedTokenAccountInstruction(
+            publicKey,
+            tokenBATA,
+            publicKey,
+            tokenBMintKeypair.publicKey,
+            TOKEN_PROGRAM_ID
+          )
+        );
+      } else {
+        console.log('Token B ATA already exists:', tokenBATA.toBase58());
       }
 
-      // Transaction 3: Token B Metadata
-      ({ blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed'));
+      // Token B Metadata
       let tokenBMetadataPDA;
       try {
         const tokenBMintUmi = umiPublicKey(tokenBMintKeypair.publicKey.toBase58());
@@ -475,9 +514,9 @@ export const Setup = () => {
         authority: umi.identity,
         payer: umi.identity,
         updateAuthority: umi.identity,
-        name: 'Token B',
-        symbol: 'TKNB',
-        uri: 'https://example.com/token-b.json',
+        name: tokenBName,
+        symbol: tokenBSymbol,
+        uri: tokenBUri,
         sellerFeeBasisPoints: percentAmount(0),
         tokenStandard: TokenStandard.Fungible,
       });
@@ -493,7 +532,6 @@ export const Setup = () => {
             if (value instanceof Uint8Array) return Array.from(value);
             return value;
           }, 2));
-          // Validate instructions
           const instructionsB = tokenBMetadataTx.message?.instructions || tokenBMetadataTx.instructions;
           console.log('Validating Token B metadata transaction instructions:', {
             hasInstructions: !!instructionsB,
@@ -504,21 +542,19 @@ export const Setup = () => {
           });
           if (!instructionsB || !Array.isArray(instructionsB) || instructionsB.length === 0) {
             console.error('Invalid Token B metadata transaction: no instructions', { tokenBMetadataTx });
-            // Rebuild builder to reset state
             tokenBMetadataBuilder = createV1(umi, {
               mint: umiPublicKey(tokenBMintKeypair.publicKey.toBase58()),
               authority: umi.identity,
               payer: umi.identity,
               updateAuthority: umi.identity,
-              name: 'Token B',
-              symbol: 'TKNB',
-              uri: 'https://example.com/token-b.json',
+              name: tokenBName,
+              symbol: tokenBSymbol,
+              uri: tokenBUri,
               sellerFeeBasisPoints: percentAmount(0),
               tokenStandard: TokenStandard.Fungible,
             });
             throw new Error('No instructions found in transaction');
           }
-          // Validate instruction keys
           for (const ix of instructionsB) {
             console.log('Inspecting instruction:', { ix });
             let keys = ix.keys;
@@ -528,10 +564,8 @@ export const Setup = () => {
                 console.error('Invalid instruction: no keys or accountIndexes provided', { ix });
                 throw new Error('Invalid instruction: no keys or accountIndexes provided');
               }
-              // Construct keys from accountIndexes
               keys = ix.accountIndexes.map((index, i) => {
                 let pubkey = tokenBMetadataTx.message.accounts[index];
-                // Fix for SysvarInstructions
                 if (pubkey === 'Sysvar1nstructions1111111111111111111111111') {
                   console.warn('Correcting SysvarInstructions public key');
                   pubkey = SYSVAR_INSTRUCTIONS_PUBKEY.toBase58();
@@ -541,24 +575,24 @@ export const Setup = () => {
                 }
                 return {
                   pubkey,
-                  isSigner: i === 3 || i === 4 || i === 5, // Payer, mintAuthority, updateAuthority
-                  isWritable: i === 0 || i === 2, // Metadata, mint
+                  isSigner: i === 3 || i === 4 || i === 5,
+                  isWritable: i === 0 || i === 2,
                 };
               });
-              ix.keys = keys; // Assign constructed keys
+              ix.keys = keys;
             }
           }
-          break; // Success, exit loop
+          break;
         } catch (buildError) {
           console.error('Failed to build Token B metadata transaction (attempt ' + buildAttemptsB + '):', buildError);
           if (buildAttemptsB === maxBuildAttemptsB) {
             throw new Error(`Failed to build Token B metadata transaction after ${maxBuildAttemptsB} attempts: ${buildError.message}`);
           }
-          // Refresh blockhash for next attempt
-          ({ blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed'));
+          const latestBlock = await connection.getLatestBlockhash('confirmed');
+          blockhash = latestBlock.blockhash;
+          lastValidBlockHeight = latestBlock.lastValidBlockHeight;
         }
       }
-      const transaction3 = new Transaction();
       const instructionsB = tokenBMetadataTx.message?.instructions || tokenBMetadataTx.instructions;
       for (const ix of instructionsB) {
         if (!ix.keys || !Array.isArray(ix.keys)) {
@@ -566,12 +600,12 @@ export const Setup = () => {
           throw new Error('Invalid instruction: no keys provided');
         }
         const programPubkey = tokenBMetadataTx.message.accounts[ix.programIndex];
-        if (!validatePublicKey(programPubkey, 'Transaction 3 program key')) {
+        if (!validatePublicKey(programPubkey, 'Token B metadata program key')) {
           throw new Error(`Invalid program public key at index ${ix.programIndex}: ${programPubkey}`);
         }
-        transaction3.add({
+        transactionB.add({
           keys: ix.keys.map((key) => {
-            if (!validatePublicKey(key.pubkey, 'Transaction 3 keys mapping')) {
+            if (!validatePublicKey(key.pubkey, 'Token B metadata keys mapping')) {
               throw new Error(`Invalid public key in transaction: ${key.pubkey}`);
             }
             return {
@@ -584,27 +618,13 @@ export const Setup = () => {
           data: Buffer.from(ix.data),
         });
       }
-      transaction3.feePayer = publicKey;
-      transaction3.recentBlockhash = blockhash;
-      transaction3.lastValidBlockHeight = lastValidBlockHeight;
-      try {
-        const signature3 = await wallet.adapter.sendTransaction(transaction3, connection);
-        console.log('Token B metadata transaction sent', { signature3 });
-        await connection.confirmTransaction({ signature: signature3, blockhash, lastValidBlockHeight }, 'confirmed');
-        console.log('Token B metadata transaction confirmed');
-      } catch (txError) {
-        console.error('Token B metadata transaction failed:', txError);
-        throw new Error(`Failed to create Token B metadata: ${txError.message || 'Transaction failed'}`);
-      }
 
-      // Transaction 4: Mint tokens
-      ({ blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed'));
-      const transaction4 = new Transaction();
+      // Mint tokens
       const tokenAAmountBN = Math.floor(amountA * 10 ** decimalsA);
       const tokenBAmountBN = Math.floor(amountB * 10 ** decimalsB);
       console.log('Minting tokens:', { tokenAAmountBN, tokenBAmountBN });
 
-      transaction4.add(
+      transactionA.add(
         createMintToInstruction(
           tokenAMintKeypair.publicKey,
           tokenAATA,
@@ -612,7 +632,10 @@ export const Setup = () => {
           tokenAAmountBN,
           [],
           TOKEN_PROGRAM_ID
-        ),
+        )
+      );
+
+      transactionB.add(
         createMintToInstruction(
           tokenBMintKeypair.publicKey,
           tokenBATA,
@@ -623,19 +646,46 @@ export const Setup = () => {
         )
       );
 
-      // Send Transaction 4
-      transaction4.feePayer = publicKey;
-      transaction4.recentBlockhash = blockhash;
-      transaction4.lastValidBlockHeight = lastValidBlockHeight;
-      console.log('Sending transaction 4 (minting)...', { blockhash });
-      try {
-        const signature4 = await wallet.adapter.sendTransaction(transaction4, connection);
-        console.log('Transaction 4 sent', { signature4 });
-        await connection.confirmTransaction({ signature: signature4, blockhash, lastValidBlockHeight }, 'confirmed');
-        console.log('Transaction 4 confirmed');
-      } catch (txError) {
-        console.error('Transaction 4 failed:', txError);
-        throw new Error(`Failed to mint tokens: ${txError.message || 'Transaction failed'}`);
+      // Try single transaction
+      const combinedTransaction = new Transaction();
+      combinedTransaction.instructions = [...transactionA.instructions, ...transactionB.instructions];
+      combinedTransaction.feePayer = publicKey;
+      combinedTransaction.recentBlockhash = blockhash;
+      combinedTransaction.lastValidBlockHeight = lastValidBlockHeight;
+
+      const txSize = estimateTransactionSize(combinedTransaction);
+      console.log('Estimated transaction size:', txSize, 'bytes');
+
+      if (txSize > 1232) {
+        console.log('Transaction size exceeds 1232 bytes, splitting into two transactions');
+        useSingleTransaction = false;
+      }
+
+      if (useSingleTransaction) {
+        setStatus('Sending combined transaction...');
+        try {
+          await sendTransactionWithConfirmation(combinedTransaction, [tokenAMintKeypair, tokenBMintKeypair], blockhash, lastValidBlockHeight);
+          setStatus('Combined transaction confirmed');
+        } catch (txError) {
+          console.error('Combined transaction failed:', txError);
+          if (txError.message && txError.message.includes('Transaction too large')) {
+            console.log('Falling back to split transactions due to size limit');
+            useSingleTransaction = false;
+          } else {
+            throw new Error(`Failed to execute combined transaction: ${txError.message || 'Transaction failed'}`);
+          }
+        }
+      }
+
+      if (!useSingleTransaction) {
+        setStatus('Sending Token A transaction...');
+        await sendTransactionWithConfirmation(transactionA, [tokenAMintKeypair], blockhash, lastValidBlockHeight);
+        setStatus('Token A transaction confirmed. Sending Token B transaction...');
+
+        // Refresh blockhash for second transaction
+        ({ blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed'));
+        await sendTransactionWithConfirmation(transactionB, [tokenBMintKeypair], blockhash, lastValidBlockHeight);
+        setStatus('Token B transaction confirmed');
       }
 
       // Update state
@@ -659,21 +709,23 @@ export const Setup = () => {
   return (
     <div className="setup">
       <h2>Setup Tokens</h2>
+      <h3>Token A</h3>
       <input
-        type="number"
-        placeholder="Token A Decimals"
-        value={tokenADecimals}
-        onChange={(e) => setTokenADecimals(e.target.value)}
-        min="0"
-        max="9"
+        type="text"
+        placeholder="Token A Name"
+        value={tokenAName}
+        onChange={(e) => setTokenAName(e.target.value)}
       />
       <input
-        type="number"
-        placeholder="Token B Decimals"
-        value={tokenBDecimals}
-        onChange={(e) => setTokenBDecimals(e.target.value)}
-        min="0"
-        max="9"
+        type="text"
+        placeholder="Token A Symbol"
+        value={tokenASymbol}
+        onChange={(e) => setTokenASymbol(e.target.value)}
+      />
+      <input
+        type="file"
+        accept="image/jpeg,image/png,image/gif"
+        onChange={(e) => setTokenAFile(e.target.files[0])}
       />
       <input
         type="number"
@@ -682,6 +734,24 @@ export const Setup = () => {
         onChange={(e) => setTokenAAmount(e.target.value)}
         min="0"
         step="0.01"
+      />
+      <h3>Token B</h3>
+      <input
+        type="text"
+        placeholder="Token B Name"
+        value={tokenBName}
+        onChange={(e) => setTokenBName(e.target.value)}
+      />
+      <input
+        type="text"
+        placeholder="Token B Symbol"
+        value={tokenBSymbol}
+        onChange={(e) => setTokenBSymbol(e.target.value)}
+      />
+      <input
+        type="file"
+        accept="image/jpeg,image/png,image/gif"
+        onChange={(e) => setTokenBFile(e.target.files[0])}
       />
       <input
         type="number"
