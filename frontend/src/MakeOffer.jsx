@@ -3,13 +3,12 @@ import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import * as anchor from '@coral-xyz/anchor';
 import { PublicKey, SystemProgram, SYSVAR_RENT_PUBKEY } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddress } from '@solana/spl-token';
-import idl from './idl/swap_idl.json';
 import { getAccount } from '@solana/spl-token';
+import idl from './idl/swap_idl.json';
 
 export const MakeOffer = () => {
   const { publicKey, wallet } = useWallet();
   const { connection } = useConnection();
-  const [offerId, setOfferId] = useState('1');
   const [tokenAAmount, setTokenAAmount] = useState('10');
   const [tokenBAmount, setTokenBAmount] = useState('10');
   const [tokenMintA, setTokenMintA] = useState('44FVk1YwWgqbEosWBXjn91P5wysJSPBwhcACQESACpEB');
@@ -27,6 +26,27 @@ export const MakeOffer = () => {
     }
   };
 
+  const getNextOfferId = async (maker, programId) => {
+    let offerId = 0;
+    while (true) {
+      const offerIdBN = new anchor.BN(offerId);
+      const [offerPda] = PublicKey.findProgramAddressSync(
+        [
+          Buffer.from('offer'),
+          maker.toBuffer(),
+          offerIdBN.toArrayLike(Buffer, 'le', 8),
+        ],
+        programId
+      );
+      const accountInfo = await connection.getAccountInfo(offerPda);
+      if (!accountInfo) {
+        console.log('Found next available offer ID:', offerId);
+        return offerIdBN;
+      }
+      offerId++;
+    }
+  };
+
   const handleMakeOffer = async () => {
     if (isSubmitting) return; // Prevent multiple submissions
     setIsSubmitting(true);
@@ -35,6 +55,7 @@ export const MakeOffer = () => {
     if (!publicKey || !wallet || !wallet.adapter) {
       setStatus('Please connect your wallet.');
       console.log('Wallet not connected, exiting');
+      setIsSubmitting(false);
       return;
     }
 
@@ -43,33 +64,31 @@ export const MakeOffer = () => {
       console.log('Starting offer creation process...');
 
       // Validate inputs
-      const offerIdNum = parseInt(offerId);
       const tokenAAmountNum = parseFloat(tokenAAmount);
       const tokenBAmountNum = parseFloat(tokenBAmount);
 
-      if (isNaN(offerIdNum) || offerIdNum < 0) {
-        setStatus('Invalid Offer ID. Must be a non-negative integer.');
-        console.log('Invalid Offer ID', { offerId });
-        return;
-      }
       if (isNaN(tokenAAmountNum) || tokenAAmountNum <= 0) {
         setStatus('Invalid Token A amount. Must be a positive number.');
         console.log('Invalid Token A amount', { tokenAAmount });
+        setIsSubmitting(false);
         return;
       }
       if (isNaN(tokenBAmountNum) || tokenBAmountNum <= 0) {
         setStatus('Invalid Token B amount. Must be a positive number.');
         console.log('Invalid Token B amount', { tokenBAmount });
+        setIsSubmitting(false);
         return;
       }
       if (!validatePublicKey(tokenMintA, 'Token A Mint')) {
         setStatus('Invalid Token A Mint address.');
         console.log('Invalid Token A Mint', { tokenMintA });
+        setIsSubmitting(false);
         return;
       }
       if (!validatePublicKey(tokenMintB, 'Token B Mint')) {
         setStatus('Invalid Token B Mint address.');
         console.log('Invalid Token B Mint', { tokenMintB });
+        setIsSubmitting(false);
         return;
       }
 
@@ -101,6 +120,7 @@ export const MakeOffer = () => {
       if (balance < minSolRequired) {
         setStatus(`Insufficient SOL balance. Need at least ${minSolRequired / anchor.web3.LAMPORTS_PER_SOL} SOL.`);
         console.log('Insufficient SOL balance', { balance: balance / anchor.web3.LAMPORTS_PER_SOL });
+        setIsSubmitting(false);
         return;
       }
 
@@ -111,8 +131,12 @@ export const MakeOffer = () => {
       const programId = new PublicKey(idl.address);
       const program = new anchor.Program(idl, provider);
 
+      // Get next offer ID
+      setStatus('Determining next offer ID...');
+      const offerIdBN = await getNextOfferId(publicKey, programId);
+      console.log('Next offer ID:', offerIdBN.toString());
+
       // Convert inputs
-      const offerIdBN = new anchor.BN(offerIdNum);
       const tokenAAmountBN = new anchor.BN(tokenAAmountNum * 10 ** 9);
       const tokenBWantedAmountBN = new anchor.BN(tokenBAmountNum * 10 ** 9);
       console.log('Input values', { offerIdBN: offerIdBN.toString(), tokenAAmountBN: tokenAAmountBN.toString(), tokenBWantedAmountBN: tokenBWantedAmountBN.toString() });
@@ -130,37 +154,41 @@ export const MakeOffer = () => {
 
       // Derive vault ATA
       const vault = await getAssociatedTokenAddress(
-        new PublicKey(tokenMintA),  // The mint of the tokens this vault will hold
-        offerPda,                   // The owner of this ATA is the offer PDA
-        true,                       // Set to true because offerPda is a PDA (off-curve)
+        new PublicKey(tokenMintA),
+        offerPda,
+        true,
         TOKEN_PROGRAM_ID,
         ASSOCIATED_TOKEN_PROGRAM_ID
       );
-      console.log('Derived vault ATA (corrected):', vault.toBase58());
+      console.log('Derived vault ATA:', vault.toBase58());
 
       // Verify accounts exist
       const tokenMintAInfo = await connection.getAccountInfo(new PublicKey(tokenMintA));
       if (!tokenMintAInfo) {
         setStatus('Token A Mint does not exist.');
         console.log('Token A Mint not found', { tokenMintA });
+        setIsSubmitting(false);
         return;
       }
       const tokenMintBInfo = await connection.getAccountInfo(new PublicKey(tokenMintB));
       if (!tokenMintBInfo) {
         setStatus('Token B Mint does not exist.');
         console.log('Token B Mint not found', { tokenMintB });
+        setIsSubmitting(false);
         return;
       }
       const makerTokenAccountAInfo = await connection.getAccountInfo(makerTokenAccountA);
       if (!makerTokenAccountAInfo) {
         setStatus('Maker Token A Account does not exist.');
         console.log('Maker Token A Account not found', { makerTokenAccountA: makerTokenAccountA.toBase58() });
+        setIsSubmitting(false);
         return;
       }
       const makerTokenAccountBInfo = await connection.getAccountInfo(makerTokenAccountB);
       if (!makerTokenAccountBInfo) {
         setStatus('Maker Token B Account does not exist.');
         console.log('Maker Token B Account not found', { makerTokenAccountB: makerTokenAccountB.toBase58() });
+        setIsSubmitting(false);
         return;
       }
       // Verify makerTokenAccountA is owned by Token Program
@@ -171,6 +199,7 @@ export const MakeOffer = () => {
           owner: makerTokenAccountAInfo.owner.toBase58(),
           expected: TOKEN_PROGRAM_ID.toBase58(),
         });
+        setIsSubmitting(false);
         return;
       }
       // Verify makerTokenAccountB is owned by Token Program
@@ -181,6 +210,7 @@ export const MakeOffer = () => {
           owner: makerTokenAccountBInfo.owner.toBase58(),
           expected: TOKEN_PROGRAM_ID.toBase58(),
         });
+        setIsSubmitting(false);
         return;
       }
       const tokenAccountAData = await getAccount(connection, makerTokenAccountA);
@@ -190,6 +220,7 @@ export const MakeOffer = () => {
           tokenAccountMint: tokenAccountAData.mint.toBase58(),
           expectedMint: tokenMintA,
         });
+        setIsSubmitting(false);
         return;
       }
       const tokenAccountBData = await getAccount(connection, makerTokenAccountB);
@@ -199,6 +230,7 @@ export const MakeOffer = () => {
           tokenAccountMint: tokenAccountBData.mint.toBase58(),
           expectedMint: tokenMintB,
         });
+        setIsSubmitting(false);
         return;
       }
       // Verify sufficient balance for Token A
@@ -209,6 +241,7 @@ export const MakeOffer = () => {
           available: Number(tokenAccountAData.amount) / 10 ** 9,
           required: tokenAAmountNum,
         });
+        setIsSubmitting(false);
         return;
       }
 
@@ -235,7 +268,7 @@ export const MakeOffer = () => {
       await connection.confirmTransaction({ signature: tx, blockhash, lastValidBlockHeight }, 'confirmed');
       console.log('Offer transaction confirmed');
 
-      setStatus(`Offer created successfully: ${tx}`);
+      setStatus(`Offer created successfully with Offer ID ${offerIdBN.toString()}: ${tx}`);
     } catch (error) {
       setStatus(`Error: ${error.message || 'An unexpected error occurred.'}`);
       console.error('Error in handleMakeOffer:', error);
@@ -249,20 +282,13 @@ export const MakeOffer = () => {
         });
       }
     } finally {
-        setIsSubmitting(false); // Re-enable button after completion (success or error)
+      setIsSubmitting(false);
     }
   };
 
   return (
     <div className="make-offer">
       <h2>Make Offer</h2>
-      <input
-        type="number"
-        placeholder="Offer ID"
-        value={offerId}
-        onChange={(e) => setOfferId(e.target.value)}
-        min="0"
-      />
       <input
         type="text"
         placeholder="Token A Mint Address"
