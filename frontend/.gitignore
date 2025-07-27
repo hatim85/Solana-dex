@@ -31,3 +31,27 @@ Token B Mint: CyNLwnJ3YtGJFrKRmEai3LX1BGTkc6uBYaztUNkx9a7S
 Token B ATA: BP1n2gxVq4j8KArQhskx3HHSKbaqieS2zwabRW4HVy4H
 
 Success! Token A Mint: EbqoHkcYJFzod5CwpfuCfLySP1do38KLnxWGiyATyBBh, Token A ATA: HbTNTbwXwGrHCKXP9SPrwpF9jznKnwqM3pki7uBn4zbR, Token B Mint: CyNLwnJ3YtGJFrKRmEai3LX1BGTkc6uBYaztUNkx9a7S, Token B ATA: BP1n2gxVq4j8KArQhskx3HHSKbaqieS2zwabRW4HVy4H
+
+
+
+mpl Token
+Token A Mint: 44FVk1YwWgqbEosWBXjn91P5wysJSPBwhcACQESACpEB
+Token A ATA: DJ7zJPiBCRBUgksyUNZHd3MqsRpRWPXmyetFAAk5kk5V
+
+Token B Mint: GcsFbKXL4rzshrpDaj9DhxcT5GiAR4qgzjX4hP3EK21s
+Token B ATA: DQ81s5cAVNhZUQQC4C8Mk17ao3JNZdQB7wHXPYc3BkuN
+
+Success! Token A Mint: 44FVk1YwWgqbEosWBXjn91P5wysJSPBwhcACQESACpEB, Token A ATA: DJ7zJPiBCRBUgksyUNZHd3MqsRpRWPXmyetFAAk5kk5V, Token B Mint: GcsFbKXL4rzshrpDaj9DhxcT5GiAR4qgzjX4hP3EK21s, Token B ATA: DQ81s5cAVNhZUQQC4C8Mk17ao3JNZdQB7wHXPYc3BkuN
+
+
+handleMakeOffer started {publicKey: 'DbYm9TtcrGwG5FVeV9prWr3ku6rA6ARfNRPe1hJsxwRZ', wallet: true, adapter: true}adapter: truepublicKey: "DbYm9TtcrGwG5FVeV9prWr3ku6rA6ARfNRPe1hJsxwRZ"wallet: true[[Prototype]]: Object
+MakeOffer.jsx:43 Starting offer creation process...
+MakeOffer.jsx:84 Derived Maker Token A Account: DJ7zJPiBCRBUgksyUNZHd3MqsRpRWPXmyetFAAk5kk5V
+MakeOffer.jsx:94 Derived Maker Token B Account: DQ81s5cAVNhZUQQC4C8Mk17ao3JNZdQB7wHXPYc3BkuN
+MakeOffer.jsx:97 Checking wallet SOL balance...
+MakeOffer.jsx:99 Wallet SOL balance: 4.53631032
+MakeOffer.jsx:118 Input values {offerIdBN: '2', tokenAAmountBN: '10000000000', tokenBWantedAmountBN: '10000000000'}offerIdBN: "2"tokenAAmountBN: "10000000000"tokenBWantedAmountBN: "10000000000"[[Prototype]]: Object
+MakeOffer.jsx:129 Derived offer PDA: Ap7QMJtgapibuvZ9mSMyfZBmJkGBRJAyimfVtcki6hNM
+MakeOffer.jsx:139 Derived vault ATA (corrected): H5VnCFf5tC64cRaTeUwPvTNeLNXqNgHyxdP2NDuG2vkz
+MakeOffer.jsx:233 Offer transaction sent {signature: '3cNEgjavdMUaqP4v37es47VXhrgExAQjJM3NzvGLZaKYKBBjQTBcCDxChFNHbfUuLYUXgPxt5YU7FCocGBQi7a7d'}signature: "3cNEgjavdMUaqP4v37es47VXhrgExAQjJM3NzvGLZaKYKBBjQTBcCDxChFNHbfUuLYUXgPxt5YU7FCocGBQi7a7d"[[Prototype]]: Object
+MakeOffer.jsx:236 Offer transaction confirmed
