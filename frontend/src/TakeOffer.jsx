@@ -2,8 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import * as anchor from '@coral-xyz/anchor';
 import { PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
-import { TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, getAccount } from '@solana/spl-token';
+import { TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, getAccount, getMint } from '@solana/spl-token';
 import idl from './idl/swap_idl.json';
+import { ShoppingCart, RefreshCw, Eye, CheckCircle, AlertCircle, Loader, ArrowRight, X } from 'lucide-react';
+import { createUmi } from '@metaplex-foundation/umi-bundle-defaults';
+import { mplTokenMetadata, fetchDigitalAsset } from '@metaplex-foundation/mpl-token-metadata';
+import { publicKey as umiPublicKey } from '@metaplex-foundation/umi';
 
 export const TakeOffer = () => {
   const { publicKey, wallet, signTransaction } = useWallet();
@@ -13,6 +17,8 @@ export const TakeOffer = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [status, setStatus] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isTakingOffer, setIsTakingOffer] = useState(false);
 
   const validatePublicKey = (key, context) => {
     try {
@@ -27,52 +33,132 @@ export const TakeOffer = () => {
   const fetchOffers = async () => {
     if (!publicKey || !wallet || !signTransaction) {
       setStatus('Please connect your wallet to fetch offers.');
-      console.log('Wallet not connected');
       return;
     }
 
-    setIsLoading(true);
+    setIsRefreshing(true);
     setStatus('Fetching offers...');
     try {
       const provider = new anchor.AnchorProvider(connection, { publicKey, signTransaction, signAllTransactions: wallet.signAllTransactions }, { commitment: 'confirmed' });
       const programId = new PublicKey(idl.address);
       const program = new anchor.Program(idl, provider);
+      const umi = createUmi(connection.rpcEndpoint).use(mplTokenMetadata());
 
       const offerAccounts = await program.account.offer.all();
-      const parsedOffers = offerAccounts.map(({ publicKey, account }) => ({
-        offerPda: publicKey.toBase58(),
-        offerId: account.id.toString(),
-        maker: account.maker.toBase58(),
-        tokenMintA: account.tokenMintA.toBase58(),
-        tokenMintB: account.tokenMintB.toBase58(),
-        tokenAAmount: Number(account.tokenAAmount) / 10 ** 9,
-        tokenBWantedAmount: Number(account.tokenBWantedAmount) / 10 ** 9,
-      }));
-      setOffers(parsedOffers);
-      setStatus(parsedOffers.length > 0 ? 'Offers loaded successfully.' : 'No offers found.');
-      console.log('Fetched offers:', parsedOffers);
+      console.log(`Fetched ${offerAccounts.length} offer accounts`);
+
+      const parsedOffers = await Promise.all(
+        offerAccounts.map(async ({ publicKey, account }) => {
+          // Validate all required fields
+          if (!account.id || !account.maker || !account.tokenMintA || !account.tokenMintB || !account.tokenAAmount || !account.tokenBWantedAmount) {
+            console.error('Invalid offer account missing required fields:', publicKey.toBase58(), {
+              id: account.id ? account.id.toString() : 'missing',
+              maker: account.maker ? account.maker.toBase58() : 'missing',
+              tokenMintA: account.tokenMintA ? account.tokenMintA.toBase58() : 'missing',
+              tokenMintB: account.tokenMintB ? account.tokenMintB.toBase58() : 'missing',
+              tokenAAmount: account.tokenAAmount ? account.tokenAAmount.toString() : 'missing',
+              tokenBWantedAmount: account.tokenBWantedAmount ? account.tokenBWantedAmount.toString() : 'missing',
+            });
+            return null;
+          }
+
+          console.log('Raw Offer Account:', {
+            publicKey: publicKey.toBase58(),
+            account: {
+              id: account.id.toString(),
+              maker: account.maker.toBase58(),
+              tokenMintA: account.tokenMintA.toBase58(),
+              tokenMintB: account.tokenMintB.toBase58(),
+              tokenAAmount: account.tokenAAmount.toString(),
+              tokenBWantedAmount: account.tokenBWantedAmount.toString(),
+            },
+          });
+
+          let tokenADecimals = 9;
+          let tokenBDecimals = 9;
+          let tokenAName = 'Token A';
+          let tokenBName = 'Token B';
+
+          try {
+            const mintAInfo = await getMint(connection, new PublicKey(account.tokenMintA));
+            tokenADecimals = mintAInfo.decimals;
+            const mintBInfo = await getMint(connection, new PublicKey(account.tokenMintB));
+            tokenBDecimals = mintBInfo.decimals;
+
+            const assetA = await fetchDigitalAsset(umi, umiPublicKey(account.tokenMintA.toBase58()));
+            tokenAName = assetA.metadata.name || 'Token A';
+            const assetB = await fetchDigitalAsset(umi, umiPublicKey(account.tokenMintB.toBase58()));
+            tokenBName = assetB.metadata.name || 'Token B';
+          } catch (error) {
+            console.error('Error fetching mint or metadata for offer:', publicKey.toBase58(), error);
+          }
+
+          let tokenAAmount, tokenBWantedAmount;
+          try {
+            tokenAAmount = account.tokenAAmount.div(new anchor.BN(10 ** tokenADecimals)).toNumber();
+            tokenBWantedAmount = account.tokenBWantedAmount.div(new anchor.BN(10 ** tokenBDecimals)).toNumber();
+          } catch (error) {
+            console.error('Error converting amounts for offer:', {
+              offerPda: publicKey.toBase58(),
+              tokenAAmount: account.tokenAAmount.toString(),
+              tokenBWantedAmount: account.tokenBWantedAmount.toString(),
+              error,
+            });
+            return null;
+          }
+
+          if (isNaN(tokenAAmount) || isNaN(tokenBWantedAmount)) {
+            console.warn('Skipping invalid offer with NaN amounts:', {
+              offerPda: publicKey.toBase58(),
+              tokenAAmount: account.tokenAAmount.toString(),
+              tokenBWantedAmount: account.tokenBWantedAmount.toString(),
+            });
+            return null;
+          }
+
+          return {
+            offerPda: publicKey.toBase58(),
+            offerId: account.id.toString(),
+            maker: account.maker.toBase58(),
+            tokenMintA: account.tokenMintA.toBase58(),
+            tokenMintB: account.tokenMintB.toBase58(),
+            tokenAAmount,
+            tokenBWantedAmount,
+            tokenAName,
+            tokenBName,
+          };
+        })
+      );
+
+      const validOffers = parsedOffers.filter((offer) => offer !== null);
+      console.log(`Processed ${validOffers.length} valid offers out of ${offerAccounts.length}`);
+      setOffers(validOffers);
+      setStatus(validOffers.length > 0 ? `Found ${validOffers.length} offers` && setIsLoading(false) : 'No offers found.' && setIsLoading(false));
     } catch (error) {
       setStatus(`Error fetching offers: ${error.message || 'An unexpected error occurred.'}`);
       console.error('Error in fetchOffers:', error);
     } finally {
+      setIsRefreshing(false);
       setIsLoading(false);
     }
   };
 
   useEffect(() => {
     if (publicKey && wallet && signTransaction) {
+      setIsLoading(true);
       fetchOffers();
     }
   }, [publicKey, wallet, signTransaction]);
 
   const handleTakeOffer = async (offer) => {
-    console.log('handleTakeOffer started', { publicKey: publicKey?.toBase58(), offer });
+    if (isTakingOffer) return;
+    setIsTakingOffer(true);
     setIsModalOpen(false);
     setStatus('Taking offer...');
 
     if (!publicKey || !wallet || !signTransaction) {
       setStatus('Please connect your wallet.');
-      console.log('Wallet not connected or signTransaction missing');
+      setIsTakingOffer(false);
       return;
     }
 
@@ -81,219 +167,31 @@ export const TakeOffer = () => {
       const programId = new PublicKey(idl.address);
       const program = new anchor.Program(idl, provider);
 
-      // Validate inputs
-      if (!validatePublicKey(offer.maker, 'Maker Public Key')) {
-        setStatus('Invalid Maker Public Key.');
-        console.log('Invalid Maker Public Key', { maker: offer.maker });
-        return;
-      }
-      if (!validatePublicKey(offer.tokenMintA, 'Token A Mint')) {
-        setStatus('Invalid Token A Mint address.');
-        console.log('Invalid Token A Mint', { tokenMintA: offer.tokenMintA });
-        return;
-      }
-      if (!validatePublicKey(offer.tokenMintB, 'Token B Mint')) {
-        setStatus('Invalid Token B Mint address.');
-        console.log('Invalid Token B Mint', { tokenMintB: offer.tokenMintB });
-        return;
-      }
-
-      // Derive offer PDA
       const offerIdBN = new anchor.BN(offer.offerId);
       const [offerPda] = PublicKey.findProgramAddressSync(
-        [
-          Buffer.from('offer'),
-          new PublicKey(offer.maker).toBuffer(),
-          offerIdBN.toArrayLike(Buffer, 'le', 8),
-        ],
+        [Buffer.from('offer'), new PublicKey(offer.maker).toBuffer(), offerIdBN.toArrayLike(Buffer, 'le', 8)],
         programId
       );
-      console.log('Derived offer PDA:', offerPda.toBase58());
 
-      // Derive vault ATA
-      const vault = await getAssociatedTokenAddress(
-        new PublicKey(offer.tokenMintA),
-        offerPda,
-        true,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      );
-      console.log('Derived vault ATA:', vault.toBase58());
+      const vault = await getAssociatedTokenAddress(new PublicKey(offer.tokenMintA), offerPda, true);
+      const takerTokenAccountA = await getAssociatedTokenAddress(new PublicKey(offer.tokenMintA), publicKey);
+      const takerTokenAccountB = await getAssociatedTokenAddress(new PublicKey(offer.tokenMintB), publicKey);
+      const makerTokenAccountB = await getAssociatedTokenAddress(new PublicKey(offer.tokenMintB), new PublicKey(offer.maker));
 
-      // Derive taker token accounts
-      const takerTokenAccountA = await getAssociatedTokenAddress(
-        new PublicKey(offer.tokenMintA),
-        publicKey,
-        false,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      );
-      console.log('Derived taker Token A Account:', takerTokenAccountA.toBase58());
-
-      const takerTokenAccountB = await getAssociatedTokenAddress(
-        new PublicKey(offer.tokenMintB),
-        publicKey,
-        false,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      );
-      console.log('Derived taker Token B Account:', takerTokenAccountB.toBase58());
-
-      const makerTokenAccountB = await getAssociatedTokenAddress(
-        new PublicKey(offer.tokenMintB),
-        new PublicKey(offer.maker),
-        false,
-        TOKEN_PROGRAM_ID,
-        ASSOCIATED_TOKEN_PROGRAM_ID
-      );
-      console.log('Derived maker Token B Account:', makerTokenAccountB.toBase58());
-
-      // Create Taker Token A Account if it doesn't exist
       const takerTokenAccountAInfo = await connection.getAccountInfo(takerTokenAccountA);
       let transaction = new Transaction();
+
       if (!takerTokenAccountAInfo) {
-        setStatus('Creating Taker Token A Account...');
-        console.log('Taker Token A Account does not exist, creating it...');
         transaction.add(
           createAssociatedTokenAccountInstruction(
             publicKey,
             takerTokenAccountA,
             publicKey,
-            new PublicKey(offer.tokenMintA),
-            TOKEN_PROGRAM_ID,
-            ASSOCIATED_TOKEN_PROGRAM_ID
+            new PublicKey(offer.tokenMintA)
           )
         );
       }
 
-      // Verify accounts exist
-      const offerPdaInfo = await connection.getAccountInfo(offerPda);
-      if (!offerPdaInfo) {
-        setStatus('Offer PDA does not exist.');
-        console.log('Offer PDA not found', { offerPda: offerPda.toBase58() });
-        return;
-      }
-      const vaultInfo = await connection.getAccountInfo(vault);
-      if (!vaultInfo) {
-        setStatus('Vault ATA does not exist.');
-        console.log('Vault ATA not found', { vault: vault.toBase58() });
-        return;
-      }
-      const tokenMintAInfo = await connection.getAccountInfo(new PublicKey(offer.tokenMintA));
-      if (!tokenMintAInfo) {
-        setStatus('Token A Mint does not exist.');
-        console.log('Token A Mint not found', { tokenMintA: offer.tokenMintA });
-        return;
-      }
-      const tokenMintBInfo = await connection.getAccountInfo(new PublicKey(offer.tokenMintB));
-      if (!tokenMintBInfo) {
-        setStatus('Token B Mint does not exist.');
-        console.log('Token B Mint not found', { tokenMintB: offer.tokenMintB });
-        return;
-      }
-      const takerTokenAccountBInfo = await connection.getAccountInfo(takerTokenAccountB);
-      if (!takerTokenAccountBInfo) {
-        setStatus('Taker Token B Account does not exist.');
-        console.log('Taker Token B Account not found', { takerTokenAccountB: takerTokenAccountB.toBase58() });
-        return;
-      }
-      const makerTokenAccountBInfo = await connection.getAccountInfo(makerTokenAccountB);
-      if (!makerTokenAccountBInfo) {
-        setStatus('Maker Token B Account does not exist.');
-        console.log('Maker Token B Account not found', { makerTokenAccountB: makerTokenAccountB.toBase58() });
-        return;
-      }
-
-      // Verify account ownership
-      if (!vaultInfo.owner.equals(TOKEN_PROGRAM_ID)) {
-        setStatus('Vault ATA is not owned by the Token Program.');
-        console.log('Vault ATA has incorrect owner', {
-          vault: vault.toBase58(),
-          owner: vaultInfo.owner.toBase58(),
-          expected: TOKEN_PROGRAM_ID.toBase58(),
-        });
-        return;
-      }
-      if (takerTokenAccountAInfo && !takerTokenAccountAInfo.owner.equals(TOKEN_PROGRAM_ID)) {
-        setStatus('Taker Token A Account is not owned by the Token Program.');
-        console.log('Taker Token A Account has incorrect owner', {
-          takerTokenAccountA: takerTokenAccountA.toBase58(),
-          owner: takerTokenAccountAInfo.owner.toBase58(),
-          expected: TOKEN_PROGRAM_ID.toBase58(),
-        });
-        return;
-      }
-      if (!takerTokenAccountBInfo.owner.equals(TOKEN_PROGRAM_ID)) {
-        setStatus('Taker Token B Account is not owned by the Token Program.');
-        console.log('Taker Token B Account has incorrect owner', {
-          takerTokenAccountB: takerTokenAccountB.toBase58(),
-          owner: takerTokenAccountBInfo.owner.toBase58(),
-          expected: TOKEN_PROGRAM_ID.toBase58(),
-        });
-        return;
-      }
-      if (!makerTokenAccountBInfo.owner.equals(TOKEN_PROGRAM_ID)) {
-        setStatus('Maker Token B Account is not owned by the Token Program.');
-        console.log('Maker Token B Account has incorrect owner', {
-          makerTokenAccountB: makerTokenAccountB.toBase58(),
-          owner: makerTokenAccountBInfo.owner.toBase58(),
-          expected: TOKEN_PROGRAM_ID.toBase58(),
-        });
-        return;
-      }
-
-      // Verify token account mints
-      const vaultData = await getAccount(connection, vault);
-      if (!vaultData.mint.equals(new PublicKey(offer.tokenMintA))) {
-        setStatus('Vault ATA is not associated with Token A Mint.');
-        console.log('Vault ATA mint mismatch', {
-          vaultMint: vaultData.mint.toBase58(),
-          expectedMint: offer.tokenMintA,
-        });
-        return;
-      }
-      if (takerTokenAccountAInfo) {
-        const takerTokenAccountAData = await getAccount(connection, takerTokenAccountA);
-        if (!takerTokenAccountAData.mint.equals(new PublicKey(offer.tokenMintA))) {
-          setStatus('Taker Token A Account is not associated with Token A Mint.');
-          console.log('Taker Token A Account mint mismatch', {
-            tokenAccountMint: takerTokenAccountAData.mint.toBase58(),
-            expectedMint: offer.tokenMintA,
-          });
-          return;
-        }
-      }
-      const takerTokenAccountBData = await getAccount(connection, takerTokenAccountB);
-      if (!takerTokenAccountBData.mint.equals(new PublicKey(offer.tokenMintB))) {
-        setStatus('Taker Token B Account is not associated with Token B Mint.');
-        console.log('Taker Token B Account mint mismatch', {
-          tokenAccountMint: takerTokenAccountBData.mint.toBase58(),
-          expectedMint: offer.tokenMintB,
-        });
-        return;
-      }
-      const makerTokenAccountBData = await getAccount(connection, makerTokenAccountB);
-      if (!makerTokenAccountBData.mint.equals(new PublicKey(offer.tokenMintB))) {
-        setStatus('Maker Token B Account is not associated with Token B Mint.');
-        console.log('Maker Token B Account mint mismatch', {
-          tokenAccountMint: makerTokenAccountBData.mint.toBase58(),
-          expectedMint: offer.tokenMintB,
-        });
-        return;
-      }
-
-      // Verify taker has sufficient Token B balance
-      const tokenBAmountLamports = Number(offer.tokenBWantedAmount) * 10 ** 9;
-      if (takerTokenAccountBData.amount < BigInt(tokenBAmountLamports)) {
-        setStatus(`Insufficient balance in Taker Token B Account. Need ${offer.tokenBWantedAmount} tokens.`);
-        console.log('Insufficient balance in Token B', {
-          available: Number(takerTokenAccountBData.amount) / 10 ** 9,
-          required: offer.tokenBWantedAmount,
-        });
-        return;
-      }
-
-      // Add takeOffer instruction
       const takeOfferIx = await program.methods
         .takeOffer()
         .accounts({
@@ -314,69 +212,32 @@ export const TakeOffer = () => {
 
       transaction.add(takeOfferIx);
 
-      // Check transaction size
-      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash();
       transaction.recentBlockhash = blockhash;
       transaction.feePayer = publicKey;
-      const txSize = transaction.serializeMessage().length;
-      console.log('Estimated transaction size:', txSize, 'bytes');
 
-      if (txSize > 1232) {
-        setStatus('Transaction too large. Splitting into two transactions...');
-        console.log('Transaction size exceeds 1232 bytes, splitting');
+      const signedTx = await signTransaction(transaction);
+      const txSig = await connection.sendRawTransaction(signedTx.serialize(), { skipPreflight: false });
+      console.log('✅ Transaction Signature:', txSig);
 
-        // Send ATA creation transaction if needed
-        if (!takerTokenAccountAInfo) {
-          const ataTransaction = new Transaction().add(
-            createAssociatedTokenAccountInstruction(
-              publicKey,
-              takerTokenAccountA,
-              publicKey,
-              new PublicKey(offer.tokenMintA),
-              TOKEN_PROGRAM_ID,
-              ASSOCIATED_TOKEN_PROGRAM_ID
-            )
-          );
-          ataTransaction.recentBlockhash = blockhash;
-          ataTransaction.feePayer = publicKey;
-          const signedAtaTx = await signTransaction(ataTransaction);
-          const ataTxSignature = await connection.sendRawTransaction(signedAtaTx.serialize());
-          console.log('Token A ATA creation transaction sent:', { signature: ataTxSignature });
-          await connection.confirmTransaction({ signature: ataTxSignature, blockhash, lastValidBlockHeight }, 'confirmed');
-          console.log('Token A ATA creation transaction confirmed');
-          setStatus('Taker Token A Account created. Proceeding with take offer...');
-        }
+      await connection.confirmTransaction({ signature: txSig, blockhash, lastValidBlockHeight }, 'confirmed');
 
-        // Send takeOffer transaction
-        const takeOfferTransaction = new Transaction().add(takeOfferIx);
-        takeOfferTransaction.recentBlockhash = blockhash;
-        takeOfferTransaction.feePayer = publicKey;
-        const signedTakeOfferTx = await signTransaction(takeOfferTransaction);
-        const takeOfferTxSignature = await connection.sendRawTransaction(signedTakeOfferTx.serialize());
-        console.log('Offer transaction sent', { signature: takeOfferTxSignature });
-        await connection.confirmTransaction({ signature: takeOfferTxSignature, blockhash, lastValidBlockHeight }, 'confirmed');
-        console.log('Offer transaction confirmed');
-        setStatus(`Offer taken successfully: ${takeOfferTxSignature}`);
-      } else {
-        // Send combined transaction
-        const signedTx = await signTransaction(transaction);
-        const txSignature = await connection.sendRawTransaction(signedTx.serialize());
-        console.log('Offer transaction sent', { signature: txSignature });
-        await connection.confirmTransaction({ signature: txSignature, blockhash, lastValidBlockHeight }, 'confirmed');
-        console.log('Offer transaction confirmed');
-        setStatus(`Offer taken successfully: ${txSignature}`);
-      }
+      setStatus(`✅ Offer taken successfully. [View on Explorer](https://explorer.solana.com/tx/${txSig}?cluster=devnet)`);
+      setTimeout(() => fetchOffers(), 2000);
     } catch (error) {
+      console.error('❌ Error in handleTakeOffer:', error);
       setStatus(`Error: ${error.message || 'An unexpected error occurred.'}`);
-      console.error('Error in handleTakeOffer:', error);
-      if (error instanceof anchor.AnchorError) {
-        console.error('Anchor Error Details:', {
-          errorCode: error.errorCode,
-          errorMessage: error.errorMessage,
-          program: error.program.toBase58(),
-          logs: error.logs,
-        });
+
+      if (error.getLogs) {
+        try {
+          const logs = await error.getLogs();
+          console.error('Transaction Logs:', logs);
+        } catch (logErr) {
+          console.warn('Could not retrieve logs:', logErr);
+        }
       }
+    } finally {
+      setIsTakingOffer(false);
     }
   };
 
@@ -390,79 +251,227 @@ export const TakeOffer = () => {
     setIsModalOpen(false);
   };
 
+  const truncateAddress = (address, start = 4, end = 4) => {
+    if (!address) return '';
+    return `${address.slice(0, start)}...${address.slice(-end)}`;
+  };
+
   return (
-    <div className="take-offer container mx-auto p-4">
-      <h2 className="text-2xl font-bold mb-4">Take Offer</h2>
-      {isLoading ? (
-        <p className="text-gray-600">Loading offers...</p>
-      ) : offers.length === 0 ? (
-        <p className="text-gray-600">No offers available.</p>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="min-w-full bg-white border border-gray-200">
-            <thead>
-              <tr className="bg-gray-100">
-                <th className="py-2 px-4 border-b">Offer ID</th>
-                <th className="py-2 px-4 border-b">Maker</th>
-                <th className="py-2 px-4 border-b">Token A Mint</th>
-                <th className="py-2 px-4 border-b">Token A Amount</th>
-                <th className="py-2 px-4 border-b">Token B Mint</th>
-                <th className="py-2 px-4 border-b">Token B Wanted</th>
-                <th className="py-2 px-4 border-b">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {offers.map((offer) => (
-                <tr key={offer.offerPda} className="hover:bg-gray-50">
-                  <td className="py-2 px-4 border-b">{offer.offerId}</td>
-                  <td className="py-2 px-4 border-b truncate max-w-xs">{offer.maker}</td>
-                  <td className="py-2 px-4 border-b truncate max-w-xs">{offer.tokenMintA}</td>
-                  <td className="py-2 px-4 border-b">{offer.tokenAAmount}</td>
-                  <td className="py-2 px-4 border-b truncate max-w-xs">{offer.tokenMintB}</td>
-                  <td className="py-2 px-4 border-b">{offer.tokenBWantedAmount}</td>
-                  <td className="py-2 px-4 border-b">
-                    <button
-                      onClick={() => openModal(offer)}
-                      className="bg-blue-500 hover:bg-blue-600 text-white py-1 px-2 rounded disabled:bg-gray-400"
-                      disabled={!publicKey || !wallet || !signTransaction}
-                    >
-                      Take Offer
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+    <div className="max-w-6xl mx-auto min-h-screen">
+      <style>
+        {`
+          .no-spinner::-webkit-inner-spin-button,
+          .no-spinner::-webkit-outer-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+          }
+          .no-spinner {
+            -moz-appearance: textfield;
+          }
+        `}
+      </style>
+      <div className="bg-white rounded-xl shadow-lg border border-gray-200 overflow-hidden">
+        <div className="bg-gradient-to-r from-purple-600 to-blue-600 px-6 py-4">
+          <div className="flex justify-between items-center">
+            <div>
+              <h2 className="text-2xl font-bold text-white flex items-center gap-2">
+                <ShoppingCart size={28} />
+                Take Offer
+              </h2>
+              <p className="text-purple-100 mt-1">Browse and accept token swap offers</p>
+            </div>
+            <button
+              onClick={fetchOffers}
+              disabled={isRefreshing}
+              className="flex items-center gap-2 px-4 py-2 bg-white/20 hover:bg-white/30 text-white rounded-lg transition-colors duration-200 disabled:opacity-50"
+            >
+              <RefreshCw size={18} className={isRefreshing ? 'animate-spin' : ''} />
+              Refresh
+            </button>
+          </div>
         </div>
-      )}
-      <p className="mt-4 text-gray-600">{status}</p>
+
+        <div className="p-6">
+          {isLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader size={32} className="animate-spin text-purple-600" />
+              <span className="ml-3 text-gray-600">Loading offers...</span>
+            </div>
+          ) : offers.length === 0 ? (
+            <div className="text-center py-12">
+              <ShoppingCart size={48} className="mx-auto text-gray-400 mb-4" />
+              <h3 className="text-lg font-semibold text-gray-600 mb-2">No offers available</h3>
+              <p className="text-gray-500">Check back later or create your own offer!</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full">
+                <thead>
+                  <tr className="border-b border-gray-200">
+                    <th className="text-left py-3 px-4 font-semibold text-gray-700">Offer ID</th>
+                    <th className="text-left py-3 px-4 font-semibold text-gray-700">Maker</th>
+                    <th className="text-left py-3 px-4 font-semibold text-gray-700">Offering</th>
+                    <th className="text-left py-3 px-4 font-semibold text-gray-700">Wanting</th>
+                    <th className="text-left py-3 px-4 font-semibold text-gray-700">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {offers.map((offer) => (
+                    <tr key={offer.offerPda} className="border-b border-gray-100 hover:bg-gray-50 transition-colors duration-150">
+                      <td className="py-4 px-4">
+                        <span className="font-mono text-sm bg-gray-100 px-2 py-1 rounded">
+                          #{offer.offerId}
+                        </span>
+                      </td>
+                      <td className="py-4 px-4">
+                        <code className="text-xs bg-gray-100 px-2 py-1 rounded">
+                          {truncateAddress(offer.maker)}
+                        </code>
+                      </td>
+                      <td className="py-4 px-4">
+                        <div className="space-y-1">
+                          <div className="font-semibold text-green-600">
+                            {offer.tokenAAmount.toFixed(2)} {offer.tokenAName}
+                          </div>
+                          <div className="text-xs text-gray-500">
+                            {truncateAddress(offer.tokenMintA)}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="py-4 px-4">
+                        <div className="space-y-1">
+                          <div className="font-semibold text-blue-600">
+                            {offer.tokenBWantedAmount.toFixed(2)} {offer.tokenBName}
+                          </div>
+                          <div className="text-xs text-gray-500">
+                            {truncateAddress(offer.tokenMintB)}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="py-4 px-4">
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => openModal(offer)}
+                            className="flex items-center gap-1 px-3 py-2 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg text-sm transition-colors duration-200"
+                          >
+                            <Eye size={16} />
+                            View
+                          </button>
+                          <button
+                            onClick={() => handleTakeOffer(offer)}
+                            disabled={!publicKey || !wallet || !signTransaction || isTakingOffer}
+                            className="flex items-center gap-1 px-3 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            <ShoppingCart size={16} />
+                            {isTakingOffer ? "Processing..." : "Take"}
+                          </button>
+
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {status && (
+            <div className={`mt-6 p-4 rounded-lg flex items-start gap-3 ${status.includes('Error')
+                ? 'bg-red-50 border border-red-200'
+                : status.includes('successfully')
+                  ? 'bg-green-50 border border-green-200'
+                  : 'bg-blue-50 border border-blue-200'
+              }`}>
+              {status.includes('Error') ? (
+                <AlertCircle size={20} className="text-red-500 mt-0.5 flex-shrink-0" />
+              ) : status.includes('successfully') ? (
+                <CheckCircle size={20} className="text-green-500 mt-0.5 flex-shrink-0" />
+              ) : (
+                <Loader size={20} className="text-blue-500 mt-0.5 flex-shrink-0 animate-spin" />
+              )}
+              <p className={`text-sm ${status.includes('Error')
+                  ? 'text-red-700'
+                  : status.includes('successfully')
+                    ? 'text-green-700'
+                    : 'text-blue-700'
+                }`}>
+                {status}
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
 
       {isModalOpen && selectedOffer && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center">
-          <div className="bg-white p-6 rounded-lg shadow-lg max-w-md w-full">
-            <h3 className="text-xl font-bold mb-4">Confirm Take Offer</h3>
-            <p><strong>Offer ID:</strong> {selectedOffer.offerId}</p>
-            <p><strong>Maker:</strong> {selectedOffer.maker}</p>
-            <p><strong>Token A Mint:</strong> {selectedOffer.tokenMintA}</p>
-            <p><strong>Token A Amount:</strong> {selectedOffer.tokenAAmount}</p>
-            <p><strong>Token B Mint:</strong> {selectedOffer.tokenMintB}</p>
-            <p><strong>Token B Wanted:</strong> {selectedOffer.tokenBWantedAmount}</p>
-            <p className="mt-4 text-sm text-gray-600">
-              You will receive {selectedOffer.tokenAAmount} Token A and send {selectedOffer.tokenBWantedAmount} Token B.
-            </p>
-            <div className="mt-6 flex justify-end space-x-4">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full max-h-[90vh] overflow-y-auto">
+            <div className="bg-gradient-to-r from-purple-600 to-blue-600 px-6 py-4 flex justify-between items-center">
+              <h3 className="text-xl font-bold text-white">Offer Details</h3>
               <button
                 onClick={closeModal}
-                className="bg-gray-300 hover:bg-gray-400 text-black py-2 px-4 rounded"
+                className="text-white hover:bg-white/20 p-1 rounded-lg transition-colors duration-200"
               >
-                Cancel
+                <X size={20} />
               </button>
-              <button
-                onClick={() => handleTakeOffer(selectedOffer)}
-                className="bg-blue-500 hover:bg-blue-600 text-white py-2 px-4 rounded"
-              >
-                Confirm
-              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div className="bg-gray-50 rounded-lg p-4">
+                <h4 className="font-semibold text-gray-800 mb-2">Offer #{selectedOffer.offerId}</h4>
+                <div className="space-y-2 text-sm">
+                  <div>
+                    <span className="font-medium text-gray-600">Maker:</span>
+                    <code className="ml-2 bg-white px-2 py-1 rounded text-xs">{selectedOffer.maker}</code>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-center">
+                <div className="bg-green-50 border border-green-200 rounded-lg p-4 flex-1">
+                  <h5 className="font-semibold text-green-800 mb-2">You'll Receive</h5>
+                  <div className="text-2xl font-bold text-green-600 mb-1">
+                    {selectedOffer.tokenAAmount.toFixed(2)} {selectedOffer.tokenAName}
+                  </div>
+                  <code className="text-xs bg-white px-2 py-1 rounded mt-2 block">
+                    {truncateAddress(selectedOffer.tokenMintA, 6, 6)}
+                  </code>
+                </div>
+
+                <div className="mx-4">
+                  <ArrowRight size={24} className="text-gray-400" />
+                </div>
+
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 flex-1">
+                  <h5 className="font-semibold text-blue-800 mb-2">You'll Send</h5>
+                  <div className="text-2xl font-bold text-blue-600 mb-1">
+                    {selectedOffer.tokenBWantedAmount.toFixed(2)} {selectedOffer.tokenBName}
+                  </div>
+                  <code className="text-xs bg-white px-2 py-1 rounded mt-2 block">
+                    {truncateAddress(selectedOffer.tokenMintB, 6, 6)}
+                  </code>
+                </div>
+              </div>
+
+              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                <p className="text-sm text-yellow-800">
+                  <strong>Important:</strong> Make sure you have sufficient Token B balance and that this trade is acceptable to you. This action cannot be undone.
+                </p>
+              </div>
+
+              <div className="flex gap-3 pt-4">
+                <button
+                  onClick={closeModal}
+                  className="flex-1 px-4 py-3 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg font-medium transition-colors duration-200"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => handleTakeOffer(selectedOffer)}
+                  className="flex-1 px-4 py-3 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white rounded-lg font-medium transition-all duration-200"
+                >
+                  Confirm Trade
+                </button>
+              </div>
             </div>
           </div>
         </div>

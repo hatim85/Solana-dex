@@ -1,5 +1,5 @@
 {
-  "address": "5AMYdYDQun6XDxcVfAcr8cvrvxEXBpAaYE9kE7U2hsHT",
+  "address": "8uRax76hJ7zPPPUsYAEgsy2PgSQs85nsN45i8KnK1ViB",
   "metadata": {
     "name": "swap",
     "version": "0.1.0",
@@ -548,6 +548,10 @@
           {
             "name": "token_mint_b",
             "type": "pubkey"
+          },
+          {
+            "name": "token_a_amount",
+            "type": "u64"
           },
           {
             "name": "token_b_wanted_amount",

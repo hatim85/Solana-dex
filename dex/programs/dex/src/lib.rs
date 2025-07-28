@@ -9,7 +9,7 @@ pub use constants::*;
 pub use instructions::*;
 pub use state::*;
 
-declare_id!("5AMYdYDQun6XDxcVfAcr8cvrvxEXBpAaYE9kE7U2hsHT");
+declare_id!("8uRax76hJ7zPPPUsYAEgsy2PgSQs85nsN45i8KnK1ViB");
 
 #[program]
 pub mod swap {
@@ -22,7 +22,7 @@ pub mod swap {
         token_b_wanted_amount: u64,
     ) -> Result<()> {
         instructions::make_offer::send_offered_tokens_to_vault(&context, token_a_offered_amount)?;
-        instructions::make_offer::save_offer(context, id, token_b_wanted_amount)
+        instructions::make_offer::save_offer(context, id, token_a_offered_amount, token_b_wanted_amount)
     }
 
     pub fn take_offer(context: Context<TakeOffer>) -> Result<()> {

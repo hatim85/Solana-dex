@@ -19,3 +19,16 @@ Signature: 2LYDaK8UMsDZaDpFW9nbzicTuJbscp5zGa5mo88QHtHoH3JuLwS9TgoH7khGAXQki7Qj4
 
 Deploy success
 hatim@Hatims-MacBook-Air dex 
+
+
+hatim@Hatims-MacBook-Air dex % anchor deploy --provider.cluster devnet
+Deploying cluster: https://api.devnet.solana.com
+Upgrade authority: /Users/hatim/.config/solana/id.json
+Deploying program "dex"...
+Program path: /Users/hatim/Projects/Solana/Solana-dex/dex/target/deploy/dex.so...
+Program Id: 8uRax76hJ7zPPPUsYAEgsy2PgSQs85nsN45i8KnK1ViB
+
+Signature: gKTjZpJ6u1xz4Btip7n4HcRhGw9tjB6coYf1WtmMHeaP3ZADY2h4N67q3z4E4qkccn7yTSWMc3zsfXJnC3Ue7Kg
+
+Deploy success
+hatim@Hatims-MacBook-Air dex % 
